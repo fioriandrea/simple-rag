@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simple-rag"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = [
+    "chromadb>=1.5.9",
+    "mcp[cli]>=1.27.1",
+    "llama_cpp_python>=0.3.23",
+]
+
+[project.scripts]
+simple-rag = "simple_rag:main"
+
+[tool.setuptools]
+py-modules = ["simple_rag"]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

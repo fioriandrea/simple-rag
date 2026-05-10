@@ -1,0 +1,65 @@
+* Simple RAG
+
+Simple script to create basic RAG using [[https://github.com/abetlen/llama-cpp-python][llama-cpp-python]] and chromadb for educational purposes.  Not suitable for production.
+
+It uses naive / length-based chunking of the input data.
+
+** Dependencies
+
+Create an environment and install the project with test dependencies:
+
+#+begin_src shell
+python -m venv .venv
+. .venv/bin/activate
+python -m pip install '.[dev]'
+#+end_src
+
+For compilation of llama-cpp-python, refer to [[https://github.com/abetlen/llama-cpp-python][it's repo]].
+
+** Tests
+
+#+begin_src shell
+pytest
+#+end_src
+
+** Usage examples
+
+Show help:
+
+#+begin_src shell
+simple-rag --help
+#+end_src
+
+To create a db starting from a bunch of text files:
+
+#+begin_src shell
+simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --n-batch 500 --glob './docs/*.txt'
+#+end_src
+
+To append a text file to an existing db:
+
+#+begin_src shell
+simple-rag dbgen --db ./mydb --n-batch 500 --glob './newdoc.txt' --append
+#+end_src
+
+To query a created db:
+
+#+begin_src shell
+simple-rag query --db ./mydb --n-batch 500 --query 'notes about linux command line'
+#+end_src
+
+To delete indexed chunks for one or more files:
+
+#+begin_src shell
+simple-rag delete --db ./mydb --n-batch 500 --files ./docs/old.txt ./docs/other.txt
+#+end_src
+
+To launch MCP server:
+
+#+begin_src shell
+simple-rag mcp --db ./mydb --n-batch 500 --host 127.0.0.1 --port 9182 --description 'This database contains my project documentation.'
+#+end_src
+
+** License
+
+This project is licensed under the GPLv3+ License - see the [[file:LICENSE][LICENSE]] file for details.
