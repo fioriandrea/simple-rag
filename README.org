@@ -39,7 +39,7 @@ simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --n-batch 500 --glob 
 To append a text file to an existing db:
 
 #+begin_src shell
-simple-rag dbgen --db ./mydb --n-batch 500 --glob './newdoc.txt' --append
+simple-rag dbgen --db ./mydb --n-batch 500 --files ./newdoc.txt --append
 #+end_src
 
 To query a created db:
