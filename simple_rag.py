@@ -61,6 +61,20 @@ def split_tokens(tokens, context_window, overlap_perc):
         i += context_window - overlap
 
 
+def read_file_list(filepath, from0=False):
+    with open(filepath, "r") as f:
+        sep = "\0" if from0 else "\n"
+        return [item for item in f.read().split(sep) if item]
+
+
+def get_dbgen_filepaths(args):
+    if args.files is not None:
+        return args.files
+    if args.files_from is not None:
+        return read_file_list(args.files_from, from0=args.from0)
+    return glob.glob(args.glob, recursive=True)
+
+
 def files_to_docs(filepaths, tokenizer, context_window, overlap_perc):
     res = []
     for filepath in filepaths:
@@ -73,7 +87,7 @@ def files_to_docs(filepaths, tokenizer, context_window, overlap_perc):
                     tokenizer.detokenize(s)
                     for s in split_tokens(tokens, context_window, overlap_perc)
                 ],
-                filepath=filepath,
+                filepath=str(filepath),
             )
         )
     return res
@@ -214,7 +228,7 @@ def main():
         )
         with DB(args.db, model, exists_ok=args.append) as db:
             tokenizer = LlamaTokenizer(model)
-            filepaths = glob.glob(args.glob, recursive=True)
+            filepaths = get_dbgen_filepaths(args)
             docs = files_to_docs(
                 filepaths=filepaths,
                 tokenizer=tokenizer,
@@ -341,11 +355,29 @@ Returns:
         required=False,
         help="Embedding model file to use. Required unless --append reads it from the DB metadata",
     )
-    dbgen.add_argument(
+    dbgen_files = dbgen.add_mutually_exclusive_group(required=True)
+    dbgen_files.add_argument(
+        "--files",
+        type=Path,
+        nargs="+",
+        help="Files to scan",
+    )
+    dbgen_files.add_argument(
+        "--files-from",
+        type=Path,
+        help="File containing paths to scan, one per line",
+    )
+    dbgen_files.add_argument(
         "--glob",
         type=str,
-        required=True,
         help="Glob for the files to scan (e.g. ./docs/**/*.txt)",
+    )
+    dbgen.add_argument(
+        "--from0",
+        "-0",
+        action="store_true",
+        default=False,
+        help="Read --files-from entries separated by NUL instead of newline",
     )
     dbgen.add_argument(
         "--overlap-perc",

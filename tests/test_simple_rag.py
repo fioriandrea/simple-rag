@@ -104,6 +104,31 @@ def test_files_to_docs_handles_empty_text(tmp_path):
     ) == [simple_rag.Doc(splits=[], filepath=str(filepath))]
 
 
+def test_read_file_list_skips_empty_lines(tmp_path):
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    file_list = tmp_path / "files.txt"
+    file_list.write_text(f"{a}\n\n{b}\n")
+
+    assert simple_rag.read_file_list(file_list) == [str(a), str(b)]
+
+
+def test_read_file_list_preserves_filename_whitespace(tmp_path):
+    file_list = tmp_path / "files.txt"
+    file_list.write_text("name with trailing space \n")
+
+    assert simple_rag.read_file_list(file_list) == ["name with trailing space "]
+
+
+def test_read_file_list_supports_nul_separators(tmp_path):
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    file_list = tmp_path / "files.txt"
+    file_list.write_text(f"{a}\0{b}\0")
+
+    assert simple_rag.read_file_list(file_list, from0=True) == [str(a), str(b)]
+
+
 def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_model):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
