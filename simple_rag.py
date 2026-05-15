@@ -277,7 +277,7 @@ def main():
         )
 
         query_db_description = f"""
-Semantic search on this vector database.
+Search this vector database when the user needs information from its documents.
 
 Database contents:
 {description}
@@ -285,48 +285,18 @@ Database contents:
 Args:
     query: Natural language search string.
     k: Number of relevant chunks to return.
+    files_only: Return only files containing matching chunks.
 Returns:
-    A report with the first k most relevant matches
+    Text report of matching chunks with file paths, or one matching file path per line.
 """
 
         @mcp.tool(description=query_db_description)
-        async def mcp_query_db(query: str, k: int) -> str:
+        async def mcp_query_db(query: str, k: int, files_only: bool = False) -> str:
             with DB(args.db, model) as db:
                 queryres = db.query(query, k)
+                if files_only:
+                    queryres = [x["file"] for x in queryres]
                 return DB.pretty_report_query_results(queryres)
-
-        top_files_description = f"""
-Find filenames relevant to a query via semantic search on this vector database.
-
-Database contents:
-{description}
-
-Use this to identify which documents to inspect. Returns names only; no text content included.
-
-Args:
-    query: Natural language search string.
-    k: Search depth, in chunks.
-Returns:
-    List like: [file1, file2, ...]. A file may appear more than once if multiple chunks match.
-"""
-
-        @mcp.tool(description=top_files_description)
-        async def mcp_query_db_for_top_files(query: str, k: int) -> list[str]:
-            with DB(args.db, model) as db:
-                return [x["file"] for x in db.query(query, k)]
-
-        @mcp.tool()
-        async def mcp_read_whole_file(path: Path) -> str:
-            """
-            Read a whole file. Useful after output of a vector db search in case you need more context.
-
-            Args:
-                path: Path to the file to read.
-            Returns:
-                The contents of the file.
-            """
-            with open(path, "r") as f:
-                return f.read().strip()
 
         mcp.run(transport="streamable-http")
 
