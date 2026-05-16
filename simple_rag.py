@@ -58,7 +58,7 @@ def split_tokens(
         i += context_window - overlap
 
 
-def read_file_list(filepath: str, from0: bool = False) -> list[str]:
+def read_file_list(filepath: Union[str, Path], from0: bool = False) -> list[str]:
     with open(filepath, "r") as f:
         sep = "\0" if from0 else "\n"
         return [item for item in f.read().split(sep) if item]
@@ -76,7 +76,7 @@ def get_dbgen_filepaths(args, db: Optional["DB"] = None) -> list[str]:
             db.remaining_files_dump_path, from0=True
         )
     if args.files is not None:
-        return args.files
+        return [str(filepath) for filepath in args.files]
     if args.files_from is not None:
         return read_file_list(args.files_from, from0=args.from0)
     return glob.glob(args.glob, recursive=True)
@@ -164,6 +164,20 @@ class DB:
     @property
     def count(self):
         return self.collection.count()
+
+    def write_files(
+        self,
+        filepaths: list[str],
+        tokenizer: Tokenizer,
+        overlap_perc: float,
+    ):
+        splitsiter = files_to_splits(
+            filepaths=filepaths,
+            tokenizer=tokenizer,
+            context_window=self.model.n_batch,
+            overlap_perc=overlap_perc,
+        )
+        self.write_documents(filepaths, splitsiter)
 
     def write_document(
         self,
@@ -281,13 +295,7 @@ def main():
             filepaths = get_dbgen_filepaths(args, db=db)
             if args.resume:
                 db.delete_files(filepaths[:1])
-            splitsiter = files_to_splits(
-                filepaths=filepaths,
-                tokenizer=tokenizer,
-                context_window=model.n_batch,
-                overlap_perc=args.overlap_perc,
-            )
-            db.write_documents(filepaths, splitsiter)
+            db.write_files(filepaths, tokenizer, args.overlap_perc)
             if args.resume:
                 db.current_file_dump_path.unlink(missing_ok=True)
                 db.remaining_files_dump_path.unlink(missing_ok=True)
