@@ -57,14 +57,15 @@ def collection_records(dbpath):
 
 
 def write_files(dbpath, paths, fake_model, append=False):
-    docs = simple_rag.files_to_docs(
-        filepaths=[str(path) for path in paths],
+    filepaths = [str(path) for path in paths]
+    splitsiter = simple_rag.files_to_splits(
+        filepaths=filepaths,
         tokenizer=CharacterTokenizer(),
         context_window=fake_model.n_batch,
         overlap_perc=0,
     )
     with simple_rag.DB(dbpath, fake_model, exists_ok=append) as db:
-        db.write_docs(docs)
+        db.write_documents(filepaths, splitsiter)
 
 
 def test_split_tokens_uses_context_window():
@@ -92,16 +93,18 @@ def test_split_tokens_uses_sliding_overlap():
     ]
 
 
-def test_files_to_docs_handles_empty_text(tmp_path):
+def test_files_to_splits_handles_empty_text(tmp_path):
     filepath = tmp_path / "empty.txt"
     filepath.write_text("")
 
-    assert simple_rag.files_to_docs(
+    splitsiter = simple_rag.files_to_splits(
         filepaths=[str(filepath)],
         tokenizer=CharacterTokenizer(),
         context_window=4,
         overlap_perc=0,
-    ) == [simple_rag.Doc(splits=[], filepath=str(filepath))]
+    )
+
+    assert [list(splits) for splits in splitsiter] == [[]]
 
 
 def test_read_file_list_skips_empty_lines(tmp_path):

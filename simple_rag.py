@@ -15,11 +15,12 @@
 
 import argparse
 import glob
+import itertools
 import json
 import logging
-from dataclasses import dataclass
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Optional, Protocol, Union
 
 import chromadb
 from llama_cpp import Llama
@@ -45,13 +46,9 @@ class LlamaTokenizer(Tokenizer):
         return str(self.model.detokenize(tokens), "utf-8", errors="ignore")
 
 
-@dataclass(frozen=True)
-class Doc:
-    splits: list[str]
-    filepath: str
-
-
-def split_tokens(tokens, context_window, overlap_perc):
+def split_tokens(
+    tokens: list[int], context_window: int, overlap_perc: float
+) -> Iterator[list[int]]:
     assert context_window > 0
     assert 0 <= overlap_perc < 1
     overlap = int(context_window * overlap_perc)
@@ -61,13 +58,13 @@ def split_tokens(tokens, context_window, overlap_perc):
         i += context_window - overlap
 
 
-def read_file_list(filepath, from0=False):
+def read_file_list(filepath: str, from0: bool = False) -> list[str]:
     with open(filepath, "r") as f:
         sep = "\0" if from0 else "\n"
         return [item for item in f.read().split(sep) if item]
 
 
-def get_dbgen_filepaths(args):
+def get_dbgen_filepaths(args) -> list[str]:
     if args.files is not None:
         return args.files
     if args.files_from is not None:
@@ -75,25 +72,22 @@ def get_dbgen_filepaths(args):
     return glob.glob(args.glob, recursive=True)
 
 
-def files_to_docs(filepaths, tokenizer, context_window, overlap_perc):
-    res = []
+def files_to_splits(
+    filepaths: list[str], tokenizer: Tokenizer, context_window: int, overlap_perc: float
+) -> Iterator[Iterator[str]]:
     for filepath in filepaths:
         with open(filepath, "r", errors="ignore") as f:
             text = f.read()
         tokens = tokenizer.tokenize(text)
-        res.append(
-            Doc(
-                splits=[
-                    tokenizer.detokenize(s)
-                    for s in split_tokens(tokens, context_window, overlap_perc)
-                ],
-                filepath=str(filepath),
-            )
+        yield (
+            tokenizer.detokenize(t)
+            for t in split_tokens(tokens, context_window, overlap_perc)
         )
-    return res
 
 
-def make_embedding_model(model_path, n_batch, n_ubatch=None):
+def make_embedding_model(
+    model_path: Union[str, Path], n_batch: int, n_ubatch: Optional[int] = None
+) -> Llama:
     assert n_batch is not None
     if n_ubatch is None:
         n_ubatch = n_batch
@@ -149,31 +143,46 @@ class DB:
         finally:
             client.close()
 
-    def write_docs(self, docs):
-        n = len(docs)
-        count = self.collection.count()
-        for i, doc in enumerate(docs):
-            splits = doc.splits
-            filepath = doc.filepath
-            logger.info(f"writing file [{i + 1} / {n}] " f"{filepath} to {self.dbpath}")
-            if not splits:
-                logger.info(
-                    f"database {self.dbpath} unchanged " f"(no records from {filepath})"
-                )
-                continue
-            self.collection.add(
-                ids=[str(k) for k in range(count, count + len(splits))],
-                # truncate=True because splitter may off by one token length.
-                # This is because sometimes:
-                # len(tokenize(detokenize(tokenize(t)))) == len(tokenize(t)) + 1
-                embeddings=self.model.embed(splits, truncate=True),
-                documents=splits,
-                metadatas=[{"file": filepath}] * len(splits),
-            )
-            count += len(splits)
+    @property
+    def count(self):
+        return self.collection.count()
+
+    def write_document(
+        self,
+        filepath: str,
+        splits: Iterator[str],
+    ):
+        for batch in itertools.batched(splits, n=self.max_batch_size):
             logger.info(
-                f"database {self.dbpath} updated "
-                f"(now with {count} records from {filepath})"
+                f"writing batch of size {len(batch)}"
+                f" from {filepath} to {self.dbpath}"
+            )
+            ids = [str(k) for k in range(self.count, self.count + len(batch))]
+            # truncate=True because splitter may off by one token length.
+            # This is because sometimes:
+            # len(tokenize(detokenize(tokenize(t)))) == len(tokenize(t)) + 1
+            embeddings = self.model.embed(batch, truncate=True)
+            metadatas = [{"file": str(filepath)}] * len(batch)
+            self.collection.add(
+                ids=ids,
+                embeddings=embeddings,
+                documents=list(batch),
+                metadatas=metadatas,
+            )
+
+    def write_documents(
+        self,
+        filepaths: list[str],
+        splitsiter: Iterator[Iterator[str]],
+    ):
+        for i, (filepath, splits) in enumerate(zip(filepaths, splitsiter)):
+            logger.info(
+                f"writing file [{i + 1} / {len(filepaths)}] "
+                f"{filepath} to {self.dbpath}"
+            )
+            self.write_document(filepath, splits)
+            logger.info(
+                f"database {self.dbpath} updated " f"(now with {self.count} records)"
             )
 
     def delete_files(self, filepaths):
@@ -229,13 +238,13 @@ def main():
         with DB(args.db, model, exists_ok=args.append) as db:
             tokenizer = LlamaTokenizer(model)
             filepaths = get_dbgen_filepaths(args)
-            docs = files_to_docs(
+            splitsiter = files_to_splits(
                 filepaths=filepaths,
                 tokenizer=tokenizer,
                 context_window=model.n_batch,
                 overlap_perc=args.overlap_perc,
             )
-            db.write_docs(docs)
+            db.write_documents(filepaths, splitsiter)
 
     def cmd_query(args):
         logger.info(
