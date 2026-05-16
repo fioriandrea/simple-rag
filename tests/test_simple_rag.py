@@ -27,6 +27,13 @@ class FakeEmbeddingModel:
         return [[float(len(text)), 1.0] for text in input]
 
 
+class FailingEmbeddingModel(FakeEmbeddingModel):
+    def embed(self, input, **_kwargs):
+        if any(text == "abcdefghij" for text in input):
+            raise RuntimeError("embedding failed")
+        return super().embed(input, **_kwargs)
+
+
 @pytest.fixture
 def fake_model():
     return FakeEmbeddingModel()
@@ -150,6 +157,36 @@ def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_mod
         ("3", str(docs2 / "b.txt"), "ABCDEFGHIJ"),
         ("4", str(docs2 / "c.txt"), "klmnopqrst"),
         ("5", str(docs2 / "c.txt"), "KLMNOPQRST"),
+    ]
+
+
+def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, corpus):
+    docs1, docs2 = corpus
+    dbpath = tmp_path / "db"
+    filepaths = [str(docs1 / "a.txt"), str(docs2 / "b.txt"), str(docs2 / "c.txt")]
+    splitsiter = simple_rag.files_to_splits(
+        filepaths=filepaths,
+        tokenizer=CharacterTokenizer(),
+        context_window=10,
+        overlap_perc=0,
+    )
+
+    with simple_rag.DB(dbpath, FailingEmbeddingModel(), exists_ok=False) as db:
+        current_dump = db.current_file_dump_path
+        remaining_dump = db.remaining_files_dump_path
+        with pytest.raises(RuntimeError, match="embedding failed"):
+            db.write_documents(filepaths, splitsiter)
+
+    assert simple_rag.read_file_list(current_dump, from0=True) == [str(docs2 / "b.txt")]
+    assert simple_rag.read_file_list(remaining_dump, from0=True) == [
+        str(docs2 / "c.txt")
+    ]
+    assert [
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
+    ] == [
+        (str(docs1 / "a.txt"), "qwertyuiop"),
+        (str(docs1 / "a.txt"), "0123456789"),
     ]
 
 
