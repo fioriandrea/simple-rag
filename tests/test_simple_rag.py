@@ -6,8 +6,10 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location("simple_rag", REPO_ROOT / "simple_rag.py")
+assert SPEC is not None
 simple_rag = importlib.util.module_from_spec(SPEC)
 sys.modules["simple_rag"] = simple_rag
+assert SPEC.loader is not None
 SPEC.loader.exec_module(simple_rag)
 
 
@@ -63,16 +65,11 @@ def collection_records(dbpath):
         client.close()
 
 
-def write_files(dbpath, paths, fake_model, append=False):
-    filepaths = [str(path) for path in paths]
-    splitsiter = simple_rag.files_to_splits(
-        filepaths=filepaths,
-        tokenizer=CharacterTokenizer(),
-        context_window=fake_model.n_batch,
-        overlap_perc=0,
-    )
+def write_test_files(dbpath, paths, fake_model, append=False):
     with simple_rag.DB(dbpath, fake_model, exists_ok=append) as db:
-        db.write_documents(filepaths, splitsiter)
+        db.write_files(
+            [str(path) for path in paths], CharacterTokenizer(), overlap_perc=0
+        )
 
 
 def test_split_tokens_uses_context_window():
@@ -143,8 +140,10 @@ def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_mod
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
 
-    write_files(dbpath, [docs1 / "a.txt", docs1 / "empty.txt"], fake_model)
-    write_files(dbpath, [docs2 / "b.txt", docs2 / "c.txt"], fake_model, append=True)
+    write_test_files(dbpath, [docs1 / "a.txt", docs1 / "empty.txt"], fake_model)
+    write_test_files(
+        dbpath, [docs2 / "b.txt", docs2 / "c.txt"], fake_model, append=True
+    )
 
     records = collection_records(dbpath)
 
@@ -193,7 +192,7 @@ def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, cor
 def test_db_stores_model_path_in_collection_metadata(tmp_path, fake_model):
     dbpath = tmp_path / "db"
 
-    write_files(dbpath, [], fake_model)
+    write_test_files(dbpath, [], fake_model)
 
     with simple_rag.DB(dbpath, fake_model) as db:
         assert db.collection.metadata["model_path"] == "fake.gguf"
@@ -202,7 +201,7 @@ def test_db_stores_model_path_in_collection_metadata(tmp_path, fake_model):
 def test_db_get_model_path_reads_collection_metadata(tmp_path, fake_model):
     dbpath = tmp_path / "db"
 
-    write_files(dbpath, [], fake_model)
+    write_test_files(dbpath, [], fake_model)
 
     assert simple_rag.DB.get_model_path(dbpath) == Path("fake.gguf")
 
@@ -210,17 +209,19 @@ def test_db_get_model_path_reads_collection_metadata(tmp_path, fake_model):
 def test_db_refuses_existing_path_without_append(tmp_path, fake_model):
     dbpath = tmp_path / "db"
 
-    write_files(dbpath, [], fake_model)
+    write_test_files(dbpath, [], fake_model)
 
     with pytest.raises(FileExistsError):
-        write_files(dbpath, [], fake_model)
+        write_test_files(dbpath, [], fake_model)
 
 
 def test_db_delete_files_removes_matching_chunks(tmp_path, corpus, fake_model):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
 
-    write_files(dbpath, [docs1 / "a.txt", docs2 / "b.txt", docs2 / "c.txt"], fake_model)
+    write_test_files(
+        dbpath, [docs1 / "a.txt", docs2 / "b.txt", docs2 / "c.txt"], fake_model
+    )
 
     with simple_rag.DB(dbpath, fake_model) as db:
         db.delete_files([docs1 / "a.txt", docs2 / "c.txt"])
