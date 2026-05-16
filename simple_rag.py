@@ -64,7 +64,17 @@ def read_file_list(filepath: str, from0: bool = False) -> list[str]:
         return [item for item in f.read().split(sep) if item]
 
 
-def get_dbgen_filepaths(args) -> list[str]:
+def write_file_list(filepath: Union[str, Path], filepaths: list[str]):
+    with open(filepath, "w") as f:
+        f.write("\0".join(filepaths))
+
+
+def get_dbgen_filepaths(args, db: Optional["DB"] = None) -> list[str]:
+    if args.resume:
+        assert db is not None
+        return read_file_list(db.current_file_dump_path, from0=True) + read_file_list(
+            db.remaining_files_dump_path, from0=True
+        )
     if args.files is not None:
         return args.files
     if args.files_from is not None:
@@ -131,6 +141,14 @@ class DB:
             settings=chromadb.config.Settings(anonymized_telemetry=False),
         )
 
+    @property
+    def current_file_dump_path(self) -> Path:
+        return self.dbpath / "current-file-dump"
+
+    @property
+    def remaining_files_dump_path(self) -> Path:
+        return self.dbpath / "remaining-files-dump"
+
     @staticmethod
     def get_model_path(dbpath):
         client = DB.make_db_client(dbpath)
@@ -170,20 +188,43 @@ class DB:
                 metadatas=metadatas,
             )
 
+    def dump_current_file(self, filepath: str):
+        try:
+            write_file_list(self.current_file_dump_path, [filepath])
+        except Exception:
+            logger.exception(
+                f"unable to write current file dump {self.current_file_dump_path} "
+                f"for {filepath}"
+            )
+
+    def dump_remaining_files(self, filepaths: list[str]):
+        try:
+            write_file_list(self.remaining_files_dump_path, filepaths)
+        except Exception:
+            logger.exception(
+                f"unable to write remaining files dump {self.remaining_files_dump_path}"
+            )
+
     def write_documents(
         self,
         filepaths: list[str],
         splitsiter: Iterator[Iterator[str]],
     ):
         for i, (filepath, splits) in enumerate(zip(filepaths, splitsiter)):
-            logger.info(
-                f"writing file [{i + 1} / {len(filepaths)}] "
-                f"{filepath} to {self.dbpath}"
-            )
-            self.write_document(filepath, splits)
-            logger.info(
-                f"database {self.dbpath} updated " f"(now with {self.count} records)"
-            )
+            try:
+                logger.info(
+                    f"writing file [{i + 1} / {len(filepaths)}] "
+                    f"{filepath} to {self.dbpath}"
+                )
+                self.write_document(filepath, splits)
+                logger.info(
+                    f"database {self.dbpath} updated "
+                    f"(now with {self.count} records)"
+                )
+            except:
+                self.dump_current_file(filepaths[i])
+                self.dump_remaining_files(filepaths[i + 1 :])
+                raise
 
     def delete_files(self, filepaths):
         for filepath in filepaths:
@@ -225,7 +266,7 @@ def main():
         )
         model_path = args.model_path
         if model_path is None:
-            if not args.append:
+            if not args.append and not args.resume:
                 raise ValueError(
                     "--model-path is required when creating a new database"
                 )
@@ -235,9 +276,11 @@ def main():
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        with DB(args.db, model, exists_ok=args.append) as db:
+        with DB(args.db, model, exists_ok=args.append or args.resume) as db:
             tokenizer = LlamaTokenizer(model)
-            filepaths = get_dbgen_filepaths(args)
+            filepaths = get_dbgen_filepaths(args, db=db)
+            if args.resume:
+                db.delete_files(filepaths[:1])
             splitsiter = files_to_splits(
                 filepaths=filepaths,
                 tokenizer=tokenizer,
@@ -245,6 +288,9 @@ def main():
                 overlap_perc=args.overlap_perc,
             )
             db.write_documents(filepaths, splitsiter)
+            if args.resume:
+                db.current_file_dump_path.unlink(missing_ok=True)
+                db.remaining_files_dump_path.unlink(missing_ok=True)
 
     def cmd_query(args):
         logger.info(
@@ -380,6 +426,12 @@ Returns:
         "--glob",
         type=str,
         help="Glob for the files to scan (e.g. ./docs/**/*.txt)",
+    )
+    dbgen_files.add_argument(
+        "--resume",
+        action="store_true",
+        default=False,
+        help="Resume an interrupted dbgen run",
     )
     dbgen.add_argument(
         "--from0",

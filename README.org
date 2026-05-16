@@ -42,6 +42,12 @@ To append a text file to an existing db:
 simple-rag dbgen --db ./mydb --n-batch 500 --files ./newdoc.txt --append
 #+end_src
 
+If dbgen is interrupted, resume it with:
+
+#+begin_src shell
+simple-rag dbgen --db ./mydb --n-batch 500 --resume
+#+end_src
+
 To query a created db:
 
 #+begin_src shell
