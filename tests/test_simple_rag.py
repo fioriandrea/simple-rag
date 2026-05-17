@@ -90,7 +90,7 @@ def dbgen_args(dbpath, **overrides):
         db=dbpath,
         append=False,
         resume=False,
-        update=False,
+        sync_indexed=False,
         files=None,
         files_from=None,
         from0=False,
@@ -331,7 +331,7 @@ def test_dbgen_resume_rewrites_current_then_remaining(tmp_path, corpus, fake_mod
     ]
 
 
-def test_dbgen_update_removes_missing_and_rewrites_modified(
+def test_dbgen_sync_indexed_removes_missing_and_rewrites_modified(
     tmp_path, corpus, fake_model
 ):
     docs1, docs2 = corpus
@@ -344,7 +344,7 @@ def test_dbgen_update_removes_missing_and_rewrites_modified(
     os.utime(docs2 / "b.txt", (stored_mtime + 10, stored_mtime + 10))
 
     run_test_dbgen(
-        dbgen_args(dbpath, update=True),
+        dbgen_args(dbpath, sync_indexed=True),
         fake_model,
     )
 
