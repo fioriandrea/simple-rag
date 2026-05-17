@@ -313,6 +313,77 @@ class DB:
         return "\n".join(res)
 
 
+def run_dbgen(args, model, tokenizer: Tokenizer):
+    with DB(args.db, model, exists_ok=args.append or args.resume or args.update) as db:
+        if args.resume:
+            db.resume_writing_files(tokenizer, args.overlap_perc)
+        elif args.update:
+            db.update_existing_files(tokenizer, args.overlap_perc)
+        elif args.files:
+            db.write_files(args.files, tokenizer, args.overlap_perc)
+        elif args.files_from:
+            db.write_files(
+                read_file_list(args.files_from, from0=args.from0),
+                tokenizer,
+                args.overlap_perc,
+            )
+        elif args.glob:
+            paths = [Path(p) for p in glob.iglob(args.glob, recursive=True)]
+            db.write_files(paths, tokenizer, args.overlap_perc)
+        else:
+            assert False, "Unreachable"
+
+
+def run_query(args, model):
+    with DB(args.db, model) as db:
+        res = db.query(args.query, args.k)
+        if args.files_only:
+            res = [x["file"] for x in res]
+        if args.json:
+            print(json.dumps(res, indent=4))
+        else:
+            print(DB.pretty_report_query_results(res))
+
+
+def run_delete(args, model):
+    with DB(args.db, model) as db:
+        db.delete_files(args.files)
+
+
+def run_mcp(args, model, server):
+    description = args.description
+    if args.description_file is not None:
+        description = args.description_file.read_text()
+    if description is None:
+        raise ValueError(
+            "either --description or --description-file is required when launching MCP server"
+        )
+
+    query_db_description = f"""
+Search this vector database when the user needs information from its documents.
+
+Database contents:
+{description}
+
+Args:
+    query: Natural language search string.
+    k: Number of relevant chunks to return.
+    files_only: Return only files containing matching chunks.
+Returns:
+    Text report of matching chunks with file paths, or one matching file path per line.
+"""
+
+    @server.tool(description=query_db_description)
+    async def mcp_query_db(query: str, k: int, files_only: bool = False) -> str:
+        with DB(args.db, model) as db:
+            queryres = db.query(query, k)
+            if files_only:
+                queryres = [x["file"] for x in queryres]
+            return DB.pretty_report_query_results(queryres)
+
+    server.run(transport="streamable-http")
+
+
 def main():
 
     def cmd_dbgen(args):
@@ -331,27 +402,7 @@ def main():
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        with DB(
-            args.db, model, exists_ok=args.append or args.resume or args.update
-        ) as db:
-            tokenizer = LlamaTokenizer(model)
-            if args.resume:
-                db.resume_writing_files(tokenizer, args.overlap_perc)
-            elif args.update:
-                db.update_existing_files(tokenizer, args.overlap_perc)
-            elif args.files:
-                db.write_files(args.files, tokenizer, args.overlap_perc)
-            elif args.files_from:
-                db.write_files(
-                    read_file_list(args.files_from, from0=args.from0),
-                    tokenizer,
-                    args.overlap_perc,
-                )
-            elif args.glob:
-                paths = [Path(p) for p in glob.iglob(args.glob, recursive=True)]
-                db.write_files(paths, tokenizer, args.overlap_perc)
-            else:
-                assert False, "Unreachable"
+        run_dbgen(args, model, LlamaTokenizer(model))
 
     def cmd_query(args):
         logger.info(
@@ -362,14 +413,7 @@ def main():
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        with DB(args.db, model) as db:
-            res = db.query(args.query, args.k)
-            if args.files_only:
-                res = [x["file"] for x in res]
-            if args.json:
-                print(json.dumps(res, indent=4))
-            else:
-                print(DB.pretty_report_query_results(res))
+        run_query(args, model)
 
     def cmd_delete(args):
         logger.info(
@@ -380,55 +424,23 @@ def main():
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        with DB(args.db, model) as db:
-            db.delete_files(args.files)
+        run_delete(args, model)
 
     def cmd_mcp(args):
         logger.info(
             f"using llama config n_batch={args.n_batch}, n_ubatch={args.n_ubatch}"
         )
-        description = args.description
-        if args.description_file is not None:
-            description = args.description_file.read_text()
-        if description is None:
-            raise ValueError(
-                "either --description or --description-file is required when launching MCP server"
-            )
-
         model = make_embedding_model(
             DB.get_model_path(args.db),
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        mcp = FastMCP(
+        server = FastMCP(
             "simple-rag-vectordb",
             host=args.host,
             port=args.port,
         )
-
-        query_db_description = f"""
-Search this vector database when the user needs information from its documents.
-
-Database contents:
-{description}
-
-Args:
-    query: Natural language search string.
-    k: Number of relevant chunks to return.
-    files_only: Return only files containing matching chunks.
-Returns:
-    Text report of matching chunks with file paths, or one matching file path per line.
-"""
-
-        @mcp.tool(description=query_db_description)
-        async def mcp_query_db(query: str, k: int, files_only: bool = False) -> str:
-            with DB(args.db, model) as db:
-                queryres = db.query(query, k)
-                if files_only:
-                    queryres = [x["file"] for x in queryres]
-                return DB.pretty_report_query_results(queryres)
-
-        mcp.run(transport="streamable-http")
+        run_mcp(args, model, server)
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

@@ -1,17 +1,11 @@
-import importlib.util
+import argparse
+import asyncio
+import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location("simple_rag", REPO_ROOT / "simple_rag.py")
-assert SPEC is not None
-simple_rag = importlib.util.module_from_spec(SPEC)
-sys.modules["simple_rag"] = simple_rag
-assert SPEC.loader is not None
-SPEC.loader.exec_module(simple_rag)
+import simple_rag
 
 
 class CharacterTokenizer:
@@ -27,7 +21,11 @@ class FakeEmbeddingModel:
     n_batch = 10
 
     def embed(self, input, **_kwargs):
-        return [[float(len(text)), 1.0] for text in input]
+        return [self.embed_text(text) for text in input]
+
+    def embed_text(self, text):
+        values = [float(ord(char)) for char in text[: self.n_batch]]
+        return values + [0.0] * (self.n_batch - len(values))
 
 
 class FailingEmbeddingModel(FakeEmbeddingModel):
@@ -35,6 +33,22 @@ class FailingEmbeddingModel(FakeEmbeddingModel):
         if any(text == "abcdefghij" for text in input):
             raise RuntimeError("embedding failed")
         return super().embed(input, **_kwargs)
+
+
+class FakeMCP:
+    def __init__(self):
+        self.tools = []
+        self.transport = None
+
+    def tool(self, description):
+        def decorator(func):
+            self.tools.append((description, func))
+            return func
+
+        return decorator
+
+    def run(self, transport):
+        self.transport = transport
 
 
 @pytest.fixture
@@ -71,19 +85,49 @@ def write_test_files(dbpath, paths, fake_model, append=False):
         db.write_files(paths, CharacterTokenizer(), overlap_perc=0)
 
 
-def run_dbgen(monkeypatch, args, fake_model):
-    monkeypatch.setattr(
-        simple_rag,
-        "make_embedding_model",
-        lambda model_path, n_batch, n_ubatch=None: fake_model,
+def dbgen_args(dbpath, **overrides):
+    args = argparse.Namespace(
+        db=dbpath,
+        append=False,
+        resume=False,
+        update=False,
+        files=None,
+        files_from=None,
+        from0=False,
+        glob=None,
+        overlap_perc=0,
     )
-    monkeypatch.setattr(
-        simple_rag, "LlamaTokenizer", lambda _model: CharacterTokenizer()
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def query_args(dbpath, **overrides):
+    args = argparse.Namespace(
+        db=dbpath,
+        query="query",
+        k=1,
+        files_only=False,
+        json=False,
     )
-    monkeypatch.setattr(
-        sys, "argv", ["simple-rag", "dbgen", *[str(arg) for arg in args]]
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def mcp_args(dbpath, **overrides):
+    args = argparse.Namespace(
+        db=dbpath,
+        description="test docs",
+        description_file=None,
     )
-    simple_rag.main()
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
+
+
+def run_test_dbgen(args, fake_model):
+    simple_rag.run_dbgen(args, fake_model, CharacterTokenizer())
 
 
 def test_split_tokens_uses_context_window():
@@ -125,15 +169,6 @@ def test_files_to_splits_handles_empty_text(tmp_path):
     assert [list(splits) for splits in splitsiter] == [[]]
 
 
-def test_read_file_list_skips_empty_lines(tmp_path):
-    a = tmp_path / "a.txt"
-    b = tmp_path / "b.txt"
-    file_list = tmp_path / "files.txt"
-    file_list.write_text(f"{a}\n\n{b}\n")
-
-    assert simple_rag.read_file_list(file_list) == [a, b]
-
-
 def test_read_file_list_preserves_filename_whitespace(tmp_path):
     file_list = tmp_path / "files.txt"
     file_list.write_text("name with trailing space \n")
@@ -145,32 +180,9 @@ def test_read_file_list_supports_nul_separators(tmp_path):
     a = tmp_path / "a.txt"
     b = tmp_path / "b.txt"
     file_list = tmp_path / "files.txt"
-    file_list.write_text(f"{a}\0{b}\0")
+    file_list.write_text(f"{a}\0{b}\0\0")
 
     assert simple_rag.read_file_list(file_list, from0=True) == [a, b]
-
-
-def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_model):
-    docs1, docs2 = corpus
-    dbpath = tmp_path / "db"
-
-    write_test_files(dbpath, [docs1 / "a.txt", docs1 / "empty.txt"], fake_model)
-    write_test_files(
-        dbpath, [docs2 / "b.txt", docs2 / "c.txt"], fake_model, append=True
-    )
-
-    records = collection_records(dbpath)
-
-    assert [
-        (item_id, metadata["file"], document) for item_id, document, metadata in records
-    ] == [
-        ("0", str(docs1 / "a.txt"), "qwertyuiop"),
-        ("1", str(docs1 / "a.txt"), "0123456789"),
-        ("2", str(docs2 / "b.txt"), "abcdefghij"),
-        ("3", str(docs2 / "b.txt"), "ABCDEFGHIJ"),
-        ("4", str(docs2 / "c.txt"), "klmnopqrst"),
-        ("5", str(docs2 / "c.txt"), "KLMNOPQRST"),
-    ]
 
 
 def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, corpus):
@@ -218,47 +230,65 @@ def test_db_refuses_existing_path_without_append(tmp_path, fake_model):
         write_test_files(dbpath, [], fake_model)
 
 
-def test_db_delete_files_removes_matching_chunks(tmp_path, corpus, fake_model):
-    docs1, docs2 = corpus
+def test_query_command_prints_json(tmp_path, corpus, fake_model, capsys):
+    docs1, _docs2 = corpus
+    filepath = docs1 / "a.txt"
     dbpath = tmp_path / "db"
+    write_test_files(dbpath, [filepath], fake_model)
 
-    write_test_files(
-        dbpath, [docs1 / "a.txt", docs2 / "b.txt", docs2 / "c.txt"], fake_model
+    simple_rag.run_query(
+        query_args(dbpath, query="qwertyuiop", k=1, json=True),
+        fake_model,
     )
 
-    with simple_rag.DB(dbpath, fake_model) as db:
-        db.delete_files([docs1 / "a.txt", docs2 / "c.txt"])
+    assert json.loads(capsys.readouterr().out) == [
+        {
+            "file": str(filepath),
+            "text": "qwertyuiop",
+        }
+    ]
 
-    records = collection_records(dbpath)
+
+def test_delete_command_removes_files(tmp_path, corpus, fake_model):
+    docs1, docs2 = corpus
+    dbpath = tmp_path / "db"
+    write_test_files(dbpath, [docs1 / "a.txt", docs2 / "b.txt"], fake_model)
+
+    simple_rag.run_delete(
+        argparse.Namespace(db=dbpath, files=[docs1 / "a.txt"]), fake_model
+    )
 
     assert [
-        (metadata["file"], document) for _item_id, document, metadata in records
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
     ] == [
         (str(docs2 / "b.txt"), "abcdefghij"),
         (str(docs2 / "b.txt"), "ABCDEFGHIJ"),
     ]
 
 
-def test_main_dbgen_files_from_reads_file_list(
-    tmp_path, corpus, fake_model, monkeypatch
-):
+def test_mcp_command_registers_query_tool(tmp_path, corpus, fake_model):
+    docs1, _docs2 = corpus
+    dbpath = tmp_path / "db"
+    server = FakeMCP()
+    write_test_files(dbpath, [docs1 / "a.txt"], fake_model)
+
+    simple_rag.run_mcp(mcp_args(dbpath), fake_model, server)
+
+    assert server.transport == "streamable-http"
+    assert len(server.tools) == 1
+    _description, tool = server.tools[0]
+    assert asyncio.run(tool("qwerty", 1, files_only=True)) == str(docs1 / "a.txt")
+
+
+def test_dbgen_files_from_reads_file_list(tmp_path, corpus, fake_model):
     docs1, _docs2 = corpus
     dbpath = tmp_path / "db"
     file_list = tmp_path / "files.txt"
-    file_list.write_text(f"{docs1 / 'a.txt'}\n")
+    file_list.write_text(f"\n{docs1 / 'a.txt'}\n\n")
 
-    run_dbgen(
-        monkeypatch,
-        [
-            "--db",
-            dbpath,
-            "--model-path",
-            "fake.gguf",
-            "--files-from",
-            file_list,
-            "--overlap-perc",
-            0,
-        ],
+    run_test_dbgen(
+        dbgen_args(dbpath, files_from=file_list),
         fake_model,
     )
 
@@ -271,9 +301,7 @@ def test_main_dbgen_files_from_reads_file_list(
     ]
 
 
-def test_main_dbgen_resume_rewrites_current_then_remaining(
-    tmp_path, corpus, fake_model, monkeypatch
-):
+def test_dbgen_resume_rewrites_current_then_remaining(tmp_path, corpus, fake_model):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
 
@@ -282,9 +310,8 @@ def test_main_dbgen_resume_rewrites_current_then_remaining(
         simple_rag.write_file_list(db.current_file_dump_path, [docs2 / "b.txt"])
         simple_rag.write_file_list(db.remaining_files_dump_path, [docs2 / "c.txt"])
 
-    run_dbgen(
-        monkeypatch,
-        ["--db", dbpath, "--resume", "--overlap-perc", 0],
+    run_test_dbgen(
+        dbgen_args(dbpath, resume=True),
         fake_model,
     )
 
@@ -304,8 +331,8 @@ def test_main_dbgen_resume_rewrites_current_then_remaining(
     ]
 
 
-def test_main_dbgen_update_removes_missing_and_rewrites_modified(
-    tmp_path, corpus, fake_model, monkeypatch
+def test_dbgen_update_removes_missing_and_rewrites_modified(
+    tmp_path, corpus, fake_model
 ):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
@@ -316,9 +343,8 @@ def test_main_dbgen_update_removes_missing_and_rewrites_modified(
     (docs2 / "b.txt").write_text("updatedTXT")
     os.utime(docs2 / "b.txt", (stored_mtime + 10, stored_mtime + 10))
 
-    run_dbgen(
-        monkeypatch,
-        ["--db", dbpath, "--update", "--overlap-perc", 0],
+    run_test_dbgen(
+        dbgen_args(dbpath, update=True),
         fake_model,
     )
 

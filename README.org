@@ -19,7 +19,7 @@ For compilation of llama-cpp-python, refer to [[https://github.com/abetlen/llama
 ** Tests
 
 #+begin_src shell
-pytest
+python -m pytest
 #+end_src
 
 ** Usage examples
