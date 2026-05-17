@@ -1,4 +1,5 @@
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -67,9 +68,22 @@ def collection_records(dbpath):
 
 def write_test_files(dbpath, paths, fake_model, append=False):
     with simple_rag.DB(dbpath, fake_model, exists_ok=append) as db:
-        db.write_files(
-            [str(path) for path in paths], CharacterTokenizer(), overlap_perc=0
-        )
+        db.write_files(paths, CharacterTokenizer(), overlap_perc=0)
+
+
+def run_dbgen(monkeypatch, args, fake_model):
+    monkeypatch.setattr(
+        simple_rag,
+        "make_embedding_model",
+        lambda model_path, n_batch, n_ubatch=None: fake_model,
+    )
+    monkeypatch.setattr(
+        simple_rag, "LlamaTokenizer", lambda _model: CharacterTokenizer()
+    )
+    monkeypatch.setattr(
+        sys, "argv", ["simple-rag", "dbgen", *[str(arg) for arg in args]]
+    )
+    simple_rag.main()
 
 
 def test_split_tokens_uses_context_window():
@@ -222,4 +236,95 @@ def test_db_delete_files_removes_matching_chunks(tmp_path, corpus, fake_model):
     ] == [
         (str(docs2 / "b.txt"), "abcdefghij"),
         (str(docs2 / "b.txt"), "ABCDEFGHIJ"),
+    ]
+
+
+def test_main_dbgen_files_from_reads_file_list(
+    tmp_path, corpus, fake_model, monkeypatch
+):
+    docs1, _docs2 = corpus
+    dbpath = tmp_path / "db"
+    file_list = tmp_path / "files.txt"
+    file_list.write_text(f"{docs1 / 'a.txt'}\n")
+
+    run_dbgen(
+        monkeypatch,
+        [
+            "--db",
+            dbpath,
+            "--model-path",
+            "fake.gguf",
+            "--files-from",
+            file_list,
+            "--overlap-perc",
+            0,
+        ],
+        fake_model,
+    )
+
+    assert [
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
+    ] == [
+        (str(docs1 / "a.txt"), "qwertyuiop"),
+        (str(docs1 / "a.txt"), "0123456789"),
+    ]
+
+
+def test_main_dbgen_resume_rewrites_current_then_remaining(
+    tmp_path, corpus, fake_model, monkeypatch
+):
+    docs1, docs2 = corpus
+    dbpath = tmp_path / "db"
+
+    write_test_files(dbpath, [docs1 / "a.txt", docs2 / "b.txt"], fake_model)
+    with simple_rag.DB(dbpath, fake_model) as db:
+        simple_rag.write_file_list(db.current_file_dump_path, [docs2 / "b.txt"])
+        simple_rag.write_file_list(db.remaining_files_dump_path, [docs2 / "c.txt"])
+
+    run_dbgen(
+        monkeypatch,
+        ["--db", dbpath, "--resume", "--overlap-perc", 0],
+        fake_model,
+    )
+
+    with simple_rag.DB(dbpath, fake_model) as db:
+        assert not db.current_file_dump_path.exists()
+        assert not db.remaining_files_dump_path.exists()
+    assert [
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
+    ] == [
+        (str(docs1 / "a.txt"), "qwertyuiop"),
+        (str(docs1 / "a.txt"), "0123456789"),
+        (str(docs2 / "b.txt"), "abcdefghij"),
+        (str(docs2 / "b.txt"), "ABCDEFGHIJ"),
+        (str(docs2 / "c.txt"), "klmnopqrst"),
+        (str(docs2 / "c.txt"), "KLMNOPQRST"),
+    ]
+
+
+def test_main_dbgen_update_removes_missing_and_rewrites_modified(
+    tmp_path, corpus, fake_model, monkeypatch
+):
+    docs1, docs2 = corpus
+    dbpath = tmp_path / "db"
+
+    write_test_files(dbpath, [docs1 / "a.txt", docs2 / "b.txt"], fake_model)
+    stored_mtime = (docs2 / "b.txt").stat().st_mtime
+    (docs1 / "a.txt").unlink()
+    (docs2 / "b.txt").write_text("updatedTXT")
+    os.utime(docs2 / "b.txt", (stored_mtime + 10, stored_mtime + 10))
+
+    run_dbgen(
+        monkeypatch,
+        ["--db", dbpath, "--update", "--overlap-perc", 0],
+        fake_model,
+    )
+
+    assert [
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
+    ] == [
+        (str(docs2 / "b.txt"), "updatedTXT"),
     ]
