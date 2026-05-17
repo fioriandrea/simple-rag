@@ -131,7 +131,7 @@ class DB:
             settings=chromadb.config.Settings(anonymized_telemetry=False),
         )
 
-    def stored_files_with_metadata(self) -> list[dict]:
+    def indexed_files_with_metadata(self) -> list[dict]:
         data = self.collection.get(include=["metadatas"])
         res = []
         seen = set()
@@ -264,21 +264,21 @@ class DB:
         self.current_file_dump_path.unlink(missing_ok=True)
         self.remaining_files_dump_path.unlink(missing_ok=True)
 
-    def update_existing_files(
+    def sync_indexed_files(
         self,
         tokenizer: Tokenizer,
         overlap_perc: float,
     ):
-        files = self.stored_files_with_metadata()
+        files = self.indexed_files_with_metadata()
         todelete = []
-        toupdate = []
+        tosync = []
         for f in files:
             if not f["file"].exists():
                 todelete.append(f["file"])
             elif "mtime" not in f or f["file"].stat().st_mtime > f["mtime"]:
-                toupdate.append(f["file"])
-        self.delete_files(todelete + toupdate)
-        self.write_files(toupdate, tokenizer, overlap_perc)
+                tosync.append(f["file"])
+        self.delete_files(todelete + tosync)
+        self.write_files(tosync, tokenizer, overlap_perc)
 
     def delete_files(self, filepaths: list[Path]):
         for filepath in filepaths:
@@ -314,11 +314,13 @@ class DB:
 
 
 def run_dbgen(args, model, tokenizer: Tokenizer):
-    with DB(args.db, model, exists_ok=args.append or args.resume or args.update) as db:
+    with DB(
+        args.db, model, exists_ok=args.append or args.resume or args.sync_indexed
+    ) as db:
         if args.resume:
             db.resume_writing_files(tokenizer, args.overlap_perc)
-        elif args.update:
-            db.update_existing_files(tokenizer, args.overlap_perc)
+        elif args.sync_indexed:
+            db.sync_indexed_files(tokenizer, args.overlap_perc)
         elif args.files:
             db.write_files(args.files, tokenizer, args.overlap_perc)
         elif args.files_from:
@@ -392,7 +394,7 @@ def main():
         )
         model_path = args.model_path
         if model_path is None:
-            if not args.append and not args.resume and not args.update:
+            if not args.append and not args.resume and not args.sync_indexed:
                 raise ValueError(
                     "--model-path is required when creating a new database"
                 )
@@ -507,10 +509,10 @@ def main():
         help="Resume an interrupted dbgen run",
     )
     dbgen_files.add_argument(
-        "--update",
+        "--sync-indexed",
         action="store_true",
         default=False,
-        help="Update modified files since last write",
+        help="Sync indexed files: delete missing files and re-index changed files",
     )
     dbgen.add_argument(
         "--from0",
