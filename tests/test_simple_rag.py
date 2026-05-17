@@ -301,6 +301,35 @@ def test_dbgen_files_from_reads_file_list(tmp_path, corpus, fake_model):
     ]
 
 
+def test_dbgen_append_replaces_existing_files_and_adds_new_files(
+    tmp_path, corpus, fake_model
+):
+    docs1, docs2 = corpus
+    filepath = docs1 / "a.txt"
+    new_filepath = docs2 / "c.txt"
+    dbpath = tmp_path / "db"
+
+    run_test_dbgen(
+        dbgen_args(dbpath, files=[filepath]),
+        fake_model,
+    )
+    filepath.write_text("replacement")
+    run_test_dbgen(
+        dbgen_args(dbpath, files=[filepath, new_filepath], append=True),
+        fake_model,
+    )
+
+    assert [
+        (metadata["file"], document)
+        for _item_id, document, metadata in collection_records(dbpath)
+    ] == [
+        (str(filepath), "replacemen"),
+        (str(filepath), "t"),
+        (str(new_filepath), "klmnopqrst"),
+        (str(new_filepath), "KLMNOPQRST"),
+    ]
+
+
 def test_dbgen_resume_rewrites_current_then_remaining(tmp_path, corpus, fake_model):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
