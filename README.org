@@ -30,40 +30,49 @@ Show help:
 simple-rag --help
 #+end_src
 
-To create a db starting from a bunch of text files:
+To create a db from text files:
 
 #+begin_src shell
-simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --n-batch 500 --glob './docs/*.txt'
+simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --glob './docs/*.txt'
+simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --files ./a.txt ./b.txt
+simple-rag dbgen --db ./mydb --model-path ./embedding.gguf --files-from ./files.txt
 #+end_src
 
-To append a text file to an existing db:
+To add files to an existing db, replacing them first if already indexed:
 
 #+begin_src shell
-simple-rag dbgen --db ./mydb --n-batch 500 --files ./newdoc.txt --append
+simple-rag dbgen --db ./mydb --files ./newdoc.txt --append
+#+end_src
+
+To sync indexed files with disk:
+
+#+begin_src shell
+simple-rag dbgen --db ./mydb --sync-indexed
 #+end_src
 
 If dbgen is interrupted, resume it with:
 
 #+begin_src shell
-simple-rag dbgen --db ./mydb --n-batch 500 --resume
+simple-rag dbgen --db ./mydb --resume
 #+end_src
 
 To query a created db:
 
 #+begin_src shell
-simple-rag query --db ./mydb --n-batch 500 --query 'notes about linux command line'
+simple-rag query --db ./mydb --query 'notes about linux command line'
+simple-rag query --db ./mydb --query 'notes about linux command line' --json
 #+end_src
 
 To delete indexed chunks for one or more files:
 
 #+begin_src shell
-simple-rag delete --db ./mydb --n-batch 500 --files ./docs/old.txt ./docs/other.txt
+simple-rag delete --db ./mydb --files ./docs/old.txt ./docs/other.txt
 #+end_src
 
 To launch MCP server:
 
 #+begin_src shell
-simple-rag mcp --db ./mydb --n-batch 500 --host 127.0.0.1 --port 9182 --description 'This database contains my project documentation.'
+simple-rag mcp --db ./mydb --description 'Project documentation for my application'
 #+end_src
 
 ** License
