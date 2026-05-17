@@ -117,14 +117,14 @@ def test_read_file_list_skips_empty_lines(tmp_path):
     file_list = tmp_path / "files.txt"
     file_list.write_text(f"{a}\n\n{b}\n")
 
-    assert simple_rag.read_file_list(file_list) == [str(a), str(b)]
+    assert simple_rag.read_file_list(file_list) == [a, b]
 
 
 def test_read_file_list_preserves_filename_whitespace(tmp_path):
     file_list = tmp_path / "files.txt"
     file_list.write_text("name with trailing space \n")
 
-    assert simple_rag.read_file_list(file_list) == ["name with trailing space "]
+    assert simple_rag.read_file_list(file_list) == [Path("name with trailing space ")]
 
 
 def test_read_file_list_supports_nul_separators(tmp_path):
@@ -133,7 +133,7 @@ def test_read_file_list_supports_nul_separators(tmp_path):
     file_list = tmp_path / "files.txt"
     file_list.write_text(f"{a}\0{b}\0")
 
-    assert simple_rag.read_file_list(file_list, from0=True) == [str(a), str(b)]
+    assert simple_rag.read_file_list(file_list, from0=True) == [a, b]
 
 
 def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_model):
@@ -162,7 +162,7 @@ def test_db_write_files_creates_and_appends_documents(tmp_path, corpus, fake_mod
 def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, corpus):
     docs1, docs2 = corpus
     dbpath = tmp_path / "db"
-    filepaths = [str(docs1 / "a.txt"), str(docs2 / "b.txt"), str(docs2 / "c.txt")]
+    filepaths = [docs1 / "a.txt", docs2 / "b.txt", docs2 / "c.txt"]
     splitsiter = simple_rag.files_to_splits(
         filepaths=filepaths,
         tokenizer=CharacterTokenizer(),
@@ -176,10 +176,8 @@ def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, cor
         with pytest.raises(RuntimeError, match="embedding failed"):
             db.write_documents(filepaths, splitsiter)
 
-    assert simple_rag.read_file_list(current_dump, from0=True) == [str(docs2 / "b.txt")]
-    assert simple_rag.read_file_list(remaining_dump, from0=True) == [
-        str(docs2 / "c.txt")
-    ]
+    assert simple_rag.read_file_list(current_dump, from0=True) == [docs2 / "b.txt"]
+    assert simple_rag.read_file_list(remaining_dump, from0=True) == [docs2 / "c.txt"]
     assert [
         (metadata["file"], document)
         for _item_id, document, metadata in collection_records(dbpath)
