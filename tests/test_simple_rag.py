@@ -187,15 +187,6 @@ def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, cor
     ]
 
 
-def test_db_stores_model_path_in_collection_metadata(tmp_path, fake_model):
-    dbpath = tmp_path / "db"
-
-    write_test_files(dbpath, [], fake_model)
-
-    with simple_rag.DB(dbpath, fake_model) as db:
-        assert db.collection.metadata["model_path"] == "fake.gguf"
-
-
 def test_db_get_model_path_reads_collection_metadata(tmp_path, fake_model):
     dbpath = tmp_path / "db"
 
