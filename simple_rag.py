@@ -69,19 +69,6 @@ def write_file_list(filepath: Path, filepaths: list[Path]):
         f.write("\0".join(str(p) for p in filepaths))
 
 
-def get_dbgen_filepaths(args, db: Optional["DB"] = None) -> list[Path]:
-    if args.resume:
-        assert db is not None
-        return read_file_list(db.current_file_dump_path, from0=True) + read_file_list(
-            db.remaining_files_dump_path, from0=True
-        )
-    if args.files is not None:
-        return args.files
-    if args.files_from is not None:
-        return read_file_list(args.files_from, from0=args.from0)
-    return [Path(p) for p in glob.iglob(args.glob, recursive=True)]
-
-
 def files_to_splits(
     filepaths: list[Path],
     tokenizer: Tokenizer,
@@ -144,6 +131,23 @@ class DB:
             settings=chromadb.config.Settings(anonymized_telemetry=False),
         )
 
+    def stored_files_with_metadata(self) -> list[dict]:
+        data = self.collection.get(include=["metadatas"])
+        res = []
+        seen = set()
+        for meta in data["metadatas"]:
+            filepath = meta["file"]
+            if filepath in seen:
+                continue
+            seen.add(filepath)
+            res.append(
+                {
+                    **meta,
+                    "file": Path(filepath),
+                }
+            )
+        return res
+
     @property
     def current_file_dump_path(self) -> Path:
         return self.dbpath / "current-file-dump"
@@ -187,6 +191,7 @@ class DB:
         filepath: Path,
         splits: Iterator[str],
     ):
+        mtime = filepath.stat().st_mtime
         for batch in itertools.batched(splits, n=self.max_batch_size):
             logger.info(
                 f"writing batch of size {len(batch)}"
@@ -197,7 +202,9 @@ class DB:
             # This is because sometimes:
             # len(tokenize(detokenize(tokenize(t)))) == len(tokenize(t)) + 1
             embeddings = self.model.embed(batch, truncate=True)
-            metadatas = [{"file": str(filepath)}] * len(batch)
+            metadatas = [
+                {"file": str(filepath), "mtime": mtime}
+            ] * len(batch)
             self.collection.add(
                 ids=ids,
                 embeddings=embeddings,
@@ -222,40 +229,64 @@ class DB:
                 f"unable to write remaining files dump {self.remaining_files_dump_path}"
             )
 
-    def try_write_document_or_dump(
-        self,
-        filepaths: list[Path],
-        splits: Iterator[str],
-        index: int,
-    ):
-        try:
-            self.write_document(filepaths[index], splits)
-        except:
-            self.dump_current_file(filepaths[index])
-            self.dump_remaining_files(filepaths[index + 1 :])
-            raise
-
     def write_documents(
         self,
         filepaths: list[Path],
         splitsiter: Iterator[Iterator[str]],
     ):
-        for i, (filepath, splits) in enumerate(zip(filepaths, splitsiter)):
-            logger.info(
-                f"writing file [{i + 1} / {len(filepaths)}] "
-                f"{filepath} to {self.dbpath}"
-            )
-            self.try_write_document_or_dump(filepaths, splits, i)
-            logger.info(
-                f"database {self.dbpath} updated " f"(now with {self.count} records)"
-            )
+        splitsiter = iter(splitsiter)
+        for i, filepath in enumerate(filepaths):
+            try:
+                splits = next(splitsiter)
+                logger.info(
+                    f"writing file [{i + 1} / {len(filepaths)}] "
+                    f"{filepath} to {self.dbpath}"
+                )
+                self.write_document(filepath, splits)
+                logger.info(
+                    f"database {self.dbpath} updated "
+                    f"(now with {self.count} records)"
+                )
+            except:
+                self.dump_current_file(filepaths[i])
+                self.dump_remaining_files(filepaths[i + 1 :])
+                raise
 
-    def delete_files(self, filepaths):
+    def resume_writing_files(
+        self,
+        tokenizer: Tokenizer,
+        overlap_perc: float,
+    ):
+        current = read_file_list(self.current_file_dump_path, from0=True)
+        remaining = read_file_list(self.remaining_files_dump_path, from0=True)
+        self.delete_files(current)
+        self.write_files(current + remaining, tokenizer, overlap_perc)
+        self.current_file_dump_path.unlink(missing_ok=True)
+        self.remaining_files_dump_path.unlink(missing_ok=True)
+
+    def update_existing_files(
+        self,
+        tokenizer: Tokenizer,
+        overlap_perc: float,
+    ):
+        files = self.stored_files_with_metadata()
+        todelete = []
+        toupdate = []
+        for f in files:
+            if not f["file"].exists():
+                todelete.append(f["file"])
+            elif "mtime" not in f or f["file"].stat().st_mtime > f["mtime"]:
+                toupdate.append(f["file"])
+        self.delete_files(todelete + toupdate)
+        self.write_files(toupdate, tokenizer, overlap_perc)
+
+    def delete_files(self, filepaths: list[Path]):
         for filepath in filepaths:
             logger.info(f"deleting file {filepath} from {self.dbpath}")
             self.collection.delete(where={"file": str(filepath)})
 
-    def query(self, query, k=5):
+    def query(self, query: str, k: int = 5):
+        assert k > 0
         results = self.collection.query(
             query_embeddings=self.model.embed([query], truncate=False),
             n_results=k,
@@ -290,7 +321,7 @@ def main():
         )
         model_path = args.model_path
         if model_path is None:
-            if not args.append and not args.resume:
+            if not args.append and not args.resume and not args.update:
                 raise ValueError(
                     "--model-path is required when creating a new database"
                 )
@@ -300,15 +331,27 @@ def main():
             n_batch=args.n_batch,
             n_ubatch=args.n_ubatch,
         )
-        with DB(args.db, model, exists_ok=args.append or args.resume) as db:
+        with DB(
+            args.db, model, exists_ok=args.append or args.resume or args.update
+        ) as db:
             tokenizer = LlamaTokenizer(model)
-            filepaths = get_dbgen_filepaths(args, db=db)
             if args.resume:
-                db.delete_files(filepaths[:1])
-            db.write_files(filepaths, tokenizer, args.overlap_perc)
-            if args.resume:
-                db.current_file_dump_path.unlink(missing_ok=True)
-                db.remaining_files_dump_path.unlink(missing_ok=True)
+                db.resume_writing_files(tokenizer, args.overlap_perc)
+            elif args.update:
+                db.update_existing_files(tokenizer, args.overlap_perc)
+            elif args.files:
+                db.write_files(args.files, tokenizer, args.overlap_perc)
+            elif args.files_from:
+                db.write_files(
+                    read_file_list(args.files_from, from0=args.from0),
+                    tokenizer,
+                    args.overlap_perc,
+                )
+            elif args.glob:
+                paths = [Path(p) for p in glob.iglob(args.glob, recursive=True)]
+                db.write_files(paths, tokenizer, args.overlap_perc)
+            else:
+                assert False, "Unreachable"
 
     def cmd_query(args):
         logger.info(
@@ -450,6 +493,12 @@ Returns:
         action="store_true",
         default=False,
         help="Resume an interrupted dbgen run",
+    )
+    dbgen_files.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Update modified files since last write",
     )
     dbgen.add_argument(
         "--from0",
