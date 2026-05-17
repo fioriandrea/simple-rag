@@ -20,7 +20,7 @@ import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Optional, Protocol, Union
+from typing import Optional, Protocol
 
 import chromadb
 from llama_cpp import Llama
@@ -202,9 +202,7 @@ class DB:
             # This is because sometimes:
             # len(tokenize(detokenize(tokenize(t)))) == len(tokenize(t)) + 1
             embeddings = self.model.embed(batch, truncate=True)
-            metadatas = [
-                {"file": str(filepath), "mtime": mtime}
-            ] * len(batch)
+            metadatas = [{"file": str(filepath), "mtime": mtime}] * len(batch)
             self.collection.add(
                 ids=ids,
                 embeddings=embeddings,
@@ -275,7 +273,7 @@ class DB:
         for f in files:
             if not f["file"].exists():
                 todelete.append(f["file"])
-            elif "mtime" not in f or f["file"].stat().st_mtime > f["mtime"]:
+            elif f["file"].stat().st_mtime > f["mtime"]:
                 tosync.append(f["file"])
         self.delete_files(todelete + tosync)
         self.write_files(tosync, tokenizer, overlap_perc)
