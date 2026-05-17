@@ -281,9 +281,12 @@ class DB:
         self.write_files(tosync, tokenizer, overlap_perc)
 
     def delete_files(self, filepaths: list[Path]):
+        if len(filepaths) == 1:
+            self.collection.delete(where={"file": str(filepaths[0])})
+        elif len(filepaths) > 1:
+            self.collection.delete(where={"$or": [{"file": str(p)} for p in filepaths]})
         for filepath in filepaths:
-            logger.info(f"deleting file {filepath} from {self.dbpath}")
-            self.collection.delete(where={"file": str(filepath)})
+            logger.info(f"deleted file {filepath} from {self.dbpath}")
 
     def query(self, query: str, k: int = 5):
         assert k > 0
@@ -321,19 +324,18 @@ def run_dbgen(args, model, tokenizer: Tokenizer):
             db.resume_writing_files(tokenizer, args.overlap_perc)
         elif args.sync_indexed:
             db.sync_indexed_files(tokenizer, args.overlap_perc)
-        elif args.files:
-            db.write_files(args.files, tokenizer, args.overlap_perc)
-        elif args.files_from:
-            db.write_files(
-                read_file_list(args.files_from, from0=args.from0),
-                tokenizer,
-                args.overlap_perc,
-            )
-        elif args.glob:
-            paths = [Path(p) for p in glob.iglob(args.glob, recursive=True)]
-            db.write_files(paths, tokenizer, args.overlap_perc)
         else:
-            assert False, "Unreachable"
+            if args.files:
+                paths = args.files
+            elif args.files_from:
+                paths = read_file_list(args.files_from, from0=args.from0)
+            elif args.glob:
+                paths = [Path(p) for p in glob.iglob(args.glob, recursive=True)]
+            else:
+                assert False, "Unreachable"
+            if args.append:
+                db.delete_files(paths)
+            db.write_files(paths, tokenizer, args.overlap_perc)
 
 
 def run_query(args, model):
