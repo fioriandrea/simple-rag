@@ -219,26 +219,33 @@ class DB:
                 f"unable to write remaining files dump {self.remaining_files_dump_path}"
             )
 
+    def try_write_document_or_dump(
+        self,
+        filepaths: list[str],
+        splits: Iterator[str],
+        index: int,
+    ):
+        try:
+            self.write_document(filepaths[index], splits)
+        except:
+            self.dump_current_file(filepaths[index])
+            self.dump_remaining_files(filepaths[index + 1 :])
+            raise
+
     def write_documents(
         self,
         filepaths: list[str],
         splitsiter: Iterator[Iterator[str]],
     ):
         for i, (filepath, splits) in enumerate(zip(filepaths, splitsiter)):
-            try:
-                logger.info(
-                    f"writing file [{i + 1} / {len(filepaths)}] "
-                    f"{filepath} to {self.dbpath}"
-                )
-                self.write_document(filepath, splits)
-                logger.info(
-                    f"database {self.dbpath} updated "
-                    f"(now with {self.count} records)"
-                )
-            except:
-                self.dump_current_file(filepaths[i])
-                self.dump_remaining_files(filepaths[i + 1 :])
-                raise
+            logger.info(
+                f"writing file [{i + 1} / {len(filepaths)}] "
+                f"{filepath} to {self.dbpath}"
+            )
+            self.try_write_document_or_dump(filepaths, splits, i)
+            logger.info(
+                f"database {self.dbpath} updated " f"(now with {self.count} records)"
+            )
 
     def delete_files(self, filepaths):
         for filepath in filepaths:
