@@ -39,10 +39,10 @@ class LlamaTokenizer(Tokenizer):
     def __init__(self, model):
         self.model = model
 
-    def tokenize(self, text):
+    def tokenize(self, text: str) -> list[int]:
         return self.model.tokenize(bytes(text, "utf-8", errors="ignore"))
 
-    def detokenize(self, tokens):
+    def detokenize(self, tokens: list[int]) -> str:
         return str(self.model.detokenize(tokens), "utf-8", errors="ignore")
 
 
@@ -58,32 +58,35 @@ def split_tokens(
         i += context_window - overlap
 
 
-def read_file_list(filepath: Union[str, Path], from0: bool = False) -> list[str]:
+def read_file_list(filepath: Path, from0: bool = False) -> list[Path]:
     with open(filepath, "r") as f:
         sep = "\0" if from0 else "\n"
-        return [item for item in f.read().split(sep) if item]
+        return [Path(item) for item in f.read().split(sep) if item]
 
 
-def write_file_list(filepath: Union[str, Path], filepaths: list[str]):
+def write_file_list(filepath: Path, filepaths: list[Path]):
     with open(filepath, "w") as f:
-        f.write("\0".join(filepaths))
+        f.write("\0".join(str(p) for p in filepaths))
 
 
-def get_dbgen_filepaths(args, db: Optional["DB"] = None) -> list[str]:
+def get_dbgen_filepaths(args, db: Optional["DB"] = None) -> list[Path]:
     if args.resume:
         assert db is not None
         return read_file_list(db.current_file_dump_path, from0=True) + read_file_list(
             db.remaining_files_dump_path, from0=True
         )
     if args.files is not None:
-        return [str(filepath) for filepath in args.files]
+        return args.files
     if args.files_from is not None:
         return read_file_list(args.files_from, from0=args.from0)
-    return glob.glob(args.glob, recursive=True)
+    return [Path(p) for p in glob.iglob(args.glob, recursive=True)]
 
 
 def files_to_splits(
-    filepaths: list[str], tokenizer: Tokenizer, context_window: int, overlap_perc: float
+    filepaths: list[Path],
+    tokenizer: Tokenizer,
+    context_window: int,
+    overlap_perc: float,
 ) -> Iterator[Iterator[str]]:
     for filepath in filepaths:
         with open(filepath, "r", errors="ignore") as f:
@@ -96,7 +99,7 @@ def files_to_splits(
 
 
 def make_embedding_model(
-    model_path: Union[str, Path], n_batch: int, n_ubatch: Optional[int] = None
+    model_path: Path, n_batch: int, n_ubatch: Optional[int] = None
 ) -> Llama:
     assert n_batch is not None
     if n_ubatch is None:
@@ -112,8 +115,8 @@ def make_embedding_model(
 
 
 class DB:
-    def __init__(self, dbpath, model, exists_ok=True):
-        self.dbpath = Path(dbpath)
+    def __init__(self, dbpath: Path, model, exists_ok=True):
+        self.dbpath = dbpath
         if not exists_ok and self.dbpath.exists():
             raise FileExistsError(f"{dbpath} already exists")
         self.client = DB.make_db_client(dbpath)
@@ -135,7 +138,7 @@ class DB:
         self.close()
 
     @staticmethod
-    def make_db_client(dbpath):
+    def make_db_client(dbpath: Path):
         return chromadb.PersistentClient(
             path=dbpath,
             settings=chromadb.config.Settings(anonymized_telemetry=False),
@@ -167,7 +170,7 @@ class DB:
 
     def write_files(
         self,
-        filepaths: list[str],
+        filepaths: list[Path],
         tokenizer: Tokenizer,
         overlap_perc: float,
     ):
@@ -181,7 +184,7 @@ class DB:
 
     def write_document(
         self,
-        filepath: str,
+        filepath: Path,
         splits: Iterator[str],
     ):
         for batch in itertools.batched(splits, n=self.max_batch_size):
@@ -202,7 +205,7 @@ class DB:
                 metadatas=metadatas,
             )
 
-    def dump_current_file(self, filepath: str):
+    def dump_current_file(self, filepath: Path):
         try:
             write_file_list(self.current_file_dump_path, [filepath])
         except Exception:
@@ -211,7 +214,7 @@ class DB:
                 f"for {filepath}"
             )
 
-    def dump_remaining_files(self, filepaths: list[str]):
+    def dump_remaining_files(self, filepaths: list[Path]):
         try:
             write_file_list(self.remaining_files_dump_path, filepaths)
         except Exception:
@@ -221,7 +224,7 @@ class DB:
 
     def try_write_document_or_dump(
         self,
-        filepaths: list[str],
+        filepaths: list[Path],
         splits: Iterator[str],
         index: int,
     ):
@@ -234,7 +237,7 @@ class DB:
 
     def write_documents(
         self,
-        filepaths: list[str],
+        filepaths: list[Path],
         splitsiter: Iterator[Iterator[str]],
     ):
         for i, (filepath, splits) in enumerate(zip(filepaths, splitsiter)):
