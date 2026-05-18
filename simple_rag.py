@@ -102,9 +102,12 @@ def make_embedding_model(
 
 
 class DB:
-    def __init__(self, dbpath: Path, model, exists_ok=True):
+    def __init__(self, dbpath: Path, model, mode: str = "r"):
         self.dbpath = dbpath
-        if not exists_ok and self.dbpath.exists():
+        assert mode in {"r", "x"}
+        if mode == "r" and not self.dbpath.exists():
+            raise FileNotFoundError(f"{dbpath} does not exist")
+        if mode == "x" and self.dbpath.exists():
             raise FileExistsError(f"{dbpath} already exists")
         self.client = DB.make_db_client(dbpath)
         self.max_batch_size = self.client.get_max_batch_size()
@@ -158,6 +161,8 @@ class DB:
 
     @staticmethod
     def get_model_path(dbpath):
+        if not Path(dbpath).exists():
+            raise FileNotFoundError(f"{dbpath} does not exist")
         client = DB.make_db_client(dbpath)
         try:
             collection = client.get_collection(name="docs")
@@ -315,9 +320,10 @@ class DB:
 
 
 def run_dbgen(args, model, tokenizer: Tokenizer):
-    with DB(
-        args.db, model, exists_ok=args.append or args.resume or args.sync_indexed
-    ) as db:
+    mode = "x"
+    if args.append or args.resume or args.sync_indexed:
+        mode = "r"
+    with DB(args.db, model, mode=mode) as db:
         if args.resume:
             db.resume_writing_files(tokenizer, args.overlap_perc)
         elif args.sync_indexed:
