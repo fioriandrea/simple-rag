@@ -120,6 +120,7 @@ def mcp_args(dbpath, **overrides):
         db=dbpath,
         description="test docs",
         description_file=None,
+        transport="streamable-http",
     )
     for name, value in overrides.items():
         setattr(args, name, value)

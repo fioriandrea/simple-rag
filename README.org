@@ -73,6 +73,7 @@ To launch MCP server:
 
 #+begin_src shell
 simple-rag mcp --db ./mydb --description 'Project documentation for my application'
+simple-rag mcp --db ./mydb --description 'Project documentation for my application' --transport stdio
 #+end_src
 
 ** License

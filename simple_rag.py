@@ -383,7 +383,7 @@ Returns:
                 queryres = [x["file"] for x in queryres]
             return DB.pretty_report_query_results(queryres)
 
-    server.run(transport="streamable-http")
+    server.run(transport=args.transport)
 
 
 def main():
@@ -576,6 +576,12 @@ def main():
         type=int,
         default=9182,
         help="Port for the MCP HTTP server",
+    )
+    mcpcmd.add_argument(
+        "--transport",
+        choices=["streamable-http", "stdio", "sse"],
+        default="streamable-http",
+        help="MCP transport protocol",
     )
     description_group = mcpcmd.add_mutually_exclusive_group(required=True)
     description_group.add_argument(
