@@ -81,7 +81,10 @@ def collection_records(dbpath):
 
 
 def write_test_files(dbpath, paths, fake_model, append=False):
-    with simple_rag.DB(dbpath, fake_model, exists_ok=append) as db:
+    mode = "x"
+    if append:
+        mode = "r"
+    with simple_rag.DB(dbpath, fake_model, mode=mode) as db:
         db.write_files(paths, CharacterTokenizer(), overlap_perc=0)
 
 
@@ -197,7 +200,7 @@ def test_db_write_documents_dumps_current_and_remaining_on_failure(tmp_path, cor
         overlap_perc=0,
     )
 
-    with simple_rag.DB(dbpath, FailingEmbeddingModel(), exists_ok=False) as db:
+    with simple_rag.DB(dbpath, FailingEmbeddingModel(), mode="x") as db:
         current_dump = db.current_file_dump_path
         remaining_dump = db.remaining_files_dump_path
         with pytest.raises(RuntimeError, match="embedding failed"):
